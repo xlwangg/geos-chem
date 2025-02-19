@@ -209,12 +209,12 @@ CONTAINS
 !
     INTEGER :: K
 
-    ! Early exit if KPP standalone interface is disabled
-    IF ( KppSa_State%SkipIt ) RETURN
-
     ! Initialize
     KppSa_ActiveCell%Active_Cell      = .FALSE.
     KppSa_ActiveCell%Active_Cell_Name = ''
+
+    ! Early exit if KPP standalone interface is disabled
+    IF ( KppSa_State%SkipIt ) RETURN
 
     ! Skip if we are outside the time interval
     IF ( KppSa_State%SkipWriteAtThisTime ) RETURN
@@ -571,7 +571,7 @@ CONTAINS
                                    exitHvalue,  ICNTRL,       RCNTRL,        &
                                    State_Grid,  State_Chm,    State_Met,     &
                                    Input_Opt,   KPP_TotSteps, RC,            &
-                                   FORCE_WRITE, CELL_NAME                   )
+                                   FORCE_WRITE, CELL_NAME,    FILE_NAME     )
 !
 ! !USES:
 !
@@ -614,6 +614,7 @@ CONTAINS
                                                            ! in an active cell
       CHARACTER(LEN=*), OPTIONAL    :: CELL_NAME           ! Customize name of
                                                            !  this file
+      CHARACTER(LEN=*), OPTIONAL    :: FILE_NAME           ! Force file name
 !
 ! !OUTPUT PARAMETERS:
 !
@@ -639,14 +640,16 @@ CONTAINS
       ! Strings
       CHARACTER(LEN=255) :: YYYYMMDD_hhmmz
       CHARACTER(LEN=255) :: level_string
-      CHARACTER(LEN=512) :: errMsg, filename
+      CHARACTER(LEN=255) :: location
+      CHARACTER(LEN=512) :: errMsg
+      CHARACTER(LEN=512) :: filename
 
       ! Arrays
       REAL(dp)           :: Aout(NREACT)
       REAL(dp)           :: Vloc(NVAR)
 
       !======================================================================
-      ! Write_Samples begins here!
+      ! KppSa_Write_Samples begins here!
       !======================================================================
 
       ! Did a user want to write the chemical state
@@ -688,15 +691,25 @@ CONTAINS
          Get_Year(), Get_Month(), Get_Day(), '_', Get_Hour(), Get_Minute()
 
       ! Filename for output
-      filename = TRIM( KppSa_State%Output_Directory                     ) // &
-                 '/'                                                      // &
-                 TRIM( Cell_Name_Aux                                    ) // &
-                 TRIM( KppSa_ActiveCell%Active_Cell_Name       ) // &
-                 '_L'                                                     // &
-                 trim( level_string                                     ) // &
-                 '_'                                                      // &
-                 TRIM( YYYYMMDD_hhmmz                                   ) // &
-                 '.txt'
+      IF ( PRESENT( FILE_NAME ) ) THEN
+         filename = TRIM( FILE_NAME )
+      ELSE
+         filename = TRIM( KppSa_State%Output_Directory                  ) // &
+                   '/'                                                    // &
+                   TRIM( location                                       ) // &
+                   '_L'                                                   // &
+                   trim( level_string                                   ) // &
+                   '_'                                                    // &
+                   TRIM( YYYYMMDD_hhmmz                                 ) // &
+                   '.txt'
+      ENDIF
+
+      ! Location name to write in the file
+      location = TRIM( Cell_Name_Aux )       
+      IF ( KppSa_ActiveCell%Active_Cell ) THEN
+         location = TRIM( location                                      ) // &
+                    TRIM( KppSa_ActiveCell%Active_Cell_Name             )
+      ENDIF
 
       ! Open the file
       ! NOTE: We cannot exit from within an !$OMP CRITICAL block
@@ -746,9 +759,8 @@ CONTAINS
       WRITE( IU_FILE, '(a,/)'     )                                          &
          'Meteorological and general grid cell metadata    '
       WRITE( IU_FILE, '(a,a)'     )                                          &
-         'Location:                                        '              // &
-          TRIM( CELL_NAME_AUX                     )                       // &
-          TRIM( KppSa_ActiveCell%ACTIVE_CELL_NAME )
+         'Location:                                        ',                &
+          TRIM( location )
       WRITE( IU_FILE, '(a,a)'     )                                          &
          'Timestamp:                                       ',                &
           TIMESTAMP_STRING()
@@ -811,17 +823,31 @@ CONTAINS
       WRITE( IU_FILE, '(a)'       ) REPEAT("=", 76 )
       WRITE( IU_FILE, '(a)'       ) 'Name,   Value,   Absolute Tolerance'
 
-      ! Write species concentrations and absolute tolerances
-      DO N = 1, NSPEC
+      ! Write variable species concentrations and absolute tolerances
+      DO N = 1, NVAR
          SpcID = State_Chm%Map_KppSpc(N)
          IF ( SpcID <= 0 ) THEN
             WRITE( IU_FILE, 120 ) N, initC(N), ATOL(N)
  120        FORMAT( "C", i0, ",", es25.16e3, ",", es10.2e2 )
             CYCLE
          ENDIF
-         WRITE( IU_FILE, 130 )                                               &
+         WRITE( IU_FILE, 125 )                                               &
             TRIM(State_Chm%SpcData(SpcID)%Info%Name), initC(N), ATOL(N)
- 130     FORMAT( a, ",", es25.16e3, ",", es10.2e2 )
+ 125     FORMAT( a, ",", es25.16e3, ",", es10.2e2 )
+      ENDDO
+
+      ! Write fixed species concentrations
+      ! NOTE: Fixed species do not have tolerances
+      DO N = NVAR+1, NSPEC
+         SpcID = State_Chm%Map_KppSpc(N)
+         IF ( SpcID <= 0 ) THEN
+            WRITE( IU_FILE, 130 ) N, initC(N)
+ 130        FORMAT( "C", i0, ",", es25.16e3 )
+            CYCLE
+         ENDIF
+         WRITE( IU_FILE, 135 )                                               &
+            TRIM(State_Chm%SpcData(SpcID)%Info%Name), initC(N)
+ 135     FORMAT( a, ",", es25.16e3 )
       ENDDO
 
       ! Write reaction rates

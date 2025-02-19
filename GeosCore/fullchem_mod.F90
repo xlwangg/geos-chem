@@ -181,8 +181,9 @@ CONTAINS
     INTEGER                :: errorCount, previous_units
     REAL(fp)               :: SO4_FRAC,   SR,        LWC
     REAL(dp)               :: KPPH_before_integrate
+
     ! Strings
-    CHARACTER(LEN=255)     :: errMsg,     thisLoc
+    CHARACTER(LEN=255)     :: errMsg,     thisLoc,   filename
 
     ! SAVEd scalars
     LOGICAL,  SAVE         :: FIRSTCHEM = .TRUE.
@@ -1013,6 +1014,15 @@ CONTAINS
                                               I,         J,         L,       &
                                               ICNTRL,    RCNTRL             )
 #endif
+#ifdef KPP_INTEGRATOR_SDIRK
+       !=====================================================================
+       ! Set options for the SDIRK integrator in vectors ICNTRL and RCNTRL
+       ! This now needs to be done within the parallel loop
+       !=====================================================================
+       ICNTRL(3)  = 6                          ! Backward Euler method
+       ICNTRL(15) = -1                         ! No rate updates in integrator
+       RCNTRL(3)  = State_Chm%KPPHvalue(I,J,L) ! Archived Hstart from restart
+#endif
 
        !=====================================================================
        ! Integrate the box forwards
@@ -1038,6 +1048,8 @@ CONTAINS
           ! Turn off error output after a certain limit is reached
           IF ( .not. doSuppress ) THEN
              WRITE( 6, * ) '### INTEGRATE RETURNED ERROR AT: ', I, J, L
+             WRITE( 6, * ) '### lon: ', State_Grid%Xmid(I,J)
+             WRITE( 6, * ) '### lat: ', State_Grid%YMid(I,J)
              errorCount = errorCount + 1
              IF ( errorCount > INTEGRATE_FAIL_TOGGLE ) THEN
                 WRITE( 6, '(a)' ) &
@@ -1118,10 +1130,10 @@ CONTAINS
              State_Diag%KppSubsts(I,J,L) = ISTATUS(7)
           ENDIF
 
-          ! # of singular-matrix decompositions
-          IF ( State_Diag%Archive_KppSmDecomps ) THEN
-             State_Diag%KppSmDecomps(I,J,L) = ISTATUS(8)
-          ENDIF
+!          ! # of singular-matrix decompositions
+!          IF ( State_Diag%Archive_KppSmDecomps ) THEN
+!             State_Diag%KppSmDecomps(I,J,L) = ISTATUS(8)
+!          ENDIF
 
 #ifdef KPP_INTEGRATOR_AUTOREDUCE
           ! Update autoreduce solver statistics
@@ -1212,10 +1224,10 @@ CONTAINS
              ENDIF
 
              ! # of singular-matrix decompositions
-!             IF ( State_Diag%Archive_KppSmDecomps ) THEN
-!                State_Diag%KppSmDecomps(I,J,L) =                             &
-!                State_Diag%KppSmDecomps(I,J,L) + ISTATUS(8)
-!             ENDIF
+             IF ( State_Diag%Archive_KppSmDecomps ) THEN
+                State_Diag%KppSmDecomps(I,J,L) =                             &
+                State_Diag%KppSmDecomps(I,J,L) + ISTATUS(8)
+             ENDIF
           ENDIF
 
           !==================================================================
@@ -1252,6 +1264,8 @@ CONTAINS
              PRINT*, REPEAT( '#', 79 )
              PRINT*, '### KPP DEBUG OUTPUT!'
              PRINT*, '### Species concentrations at problem box ', I, J, L
+             PRINT*, '### lon: ', State_Grid%Xmid(I,J)
+             PRINT*, '### lat: ', State_Grid%YMid(I,J)
              PRINT*, REPEAT( '#', 79 )
              DO N = 1, NSPEC
                 PRINT*, C(N), TRIM( ADJUSTL( SPC_NAMES(N) ) )
@@ -1261,10 +1275,36 @@ CONTAINS
              PRINT*, REPEAT( '#', 79 )
              PRINT*, '### KPP DEBUG OUTPUT!'
              PRINT*, '### Reaction rates at problem box ', I, J, L
+             PRINT*, '### lon: ', State_Grid%Xmid(I,J)
+             PRINT*, '### lat: ', State_Grid%YMid(I,J)
              PRINT*, REPEAT( '#', 79 )
              DO N = 1, NREACT
                 PRINT*, RCONST(N), TRIM( ADJUSTL( EQN_NAMES(N) ) )
              ENDDO
+
+             ! Force-write KPP-Standalone output file to facilitate
+             ! later analysis & debugging (Bob Yantosca, 19 Feb 2025)
+             WRITE( fileName, 200 ) I, J, L
+ 200         FORMAT( "KPP_Error_Box", 3("_", i5.5), ".txt")
+             CALL KppSa_Write_Samples(                                       &
+                  I            = I,                                          &
+                  J            = J,                                          &
+                  L            = L,                                          &
+                  initC        = C_before_integrate,                         &
+                  localRCONST  = local_RCONST,                               &
+                  initHvalue   = KPPH_before_integrate,                      &
+                  exitHvalue   = RSTATE(Nhexit),                             &
+                  ICNTRL       = ICNTRL,                                     &
+                  RCNTRL       = RCNTRL,                                     &
+                  State_Grid   = State_Grid,                                 &
+                  State_Chm    = State_Chm,                                  &
+                  State_Met    = State_Met,                                  &
+                  Input_Opt    = Input_Opt,                                  &
+                  KPP_TotSteps = ISTATUS(3),                                 &
+                  Force_Write  = .TRUE.,                                     &
+                  Cell_Name    = TRIM( fileName ),                           &
+                  File_Name    = TRIM( fileName ),                           &
+                  RC           = RC                                         )
              !
              !$OMP END CRITICAL
              !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
